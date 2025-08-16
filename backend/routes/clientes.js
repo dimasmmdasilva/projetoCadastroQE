@@ -8,6 +8,40 @@ const router = Router();
 /* utils */
 const onlyDigits = (s) => (s == null ? "" : String(s).replace(/\D/g, ""));
 
+function toISODate(value) {
+  if (value == null || String(value).trim() === "") return "";
+  const s = String(value).trim();
+
+  // 1) DD/MM/AAAA
+  const m1 = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  if (m1) {
+    const dd = m1[1].padStart(2, "0");
+    const mm = m1[2].padStart(2, "0");
+    const yyyy = m1[3];
+    const iso = `${yyyy}-${mm}-${dd}`;
+    if (isValidISODate(iso)) return iso;
+    return null;
+  }
+
+  // 2) YYYY-MM-DD
+  const m2 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (m2 && isValidISODate(s)) return s;
+
+  return null;
+}
+
+/** Valida uma data ISO YYYY-MM-DD de forma "real" */
+function isValidISODate(iso) {
+  const [y, m, d] = iso.split("-").map((x) => Number(x));
+  const dt = new Date(iso);
+  return (
+    !Number.isNaN(dt.getTime()) &&
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() + 1 === m &&
+    dt.getUTCDate() === d
+  );
+}
+
 function buildUpdateSet(bodyObj) {
   const campos = [
     "idUsuario",
@@ -46,37 +80,51 @@ async function gerarCodigo() {
   return `C${hoje}-${seq}`;
 }
 
-/* validações comuns */
+/* validações */
 const postValidations = [
   body("Nome").trim().notEmpty().withMessage("Nome é obrigatório"),
+
   body("UF")
     .optional()
     .isLength({ max: 2 })
     .withMessage("UF deve ter no máximo 2 letras"),
+
   body("CEP")
     .optional({ checkFalsy: true })
     .customSanitizer(onlyDigits)
     .isLength({ min: 8, max: 8 })
     .withMessage("CEP deve ter 8 dígitos"),
+
   body("LimiteCredito")
     .optional({ checkFalsy: true })
     .isFloat()
     .withMessage("Limite de crédito inválido"),
+
+  // Validade pode vir como DD/MM/AAAA ou YYYY-MM-DD
   body("Validade")
     .optional({ checkFalsy: true })
-    .isISO8601()
-    .withMessage("Data inválida"),
-  // não exigimos Codigo: será gerado se não vier
+    .custom((v) => toISODate(v) !== null)
+    .withMessage("Data inválida (use DD/MM/AAAA)")
+    .customSanitizer(toISODate),
+
+  // Codigo é opcional — geramos se não vier
 ];
 
 const putValidations = [
   body("UF").optional().isLength({ max: 2 }),
+
   body("CEP")
     .optional({ checkFalsy: true })
     .customSanitizer(onlyDigits)
     .isLength({ min: 8, max: 8 }),
+
   body("LimiteCredito").optional({ checkFalsy: true }).isFloat(),
-  body("Validade").optional({ checkFalsy: true }).isISO8601(),
+
+  body("Validade")
+    .optional({ checkFalsy: true })
+    .custom((v) => toISODate(v) !== null)
+    .withMessage("Data inválida (use DD/MM/AAAA)")
+    .customSanitizer(toISODate),
 ];
 
 /* GET /clientes (com filtros opcionais) */
@@ -138,8 +186,8 @@ router.post("/", postValidations, async (req, res, next) => {
 
     const payload = { ...req.body };
 
-    // normalizações
-    payload.CEP = payload.CEP ? onlyDigits(payload.CEP) : null; // mantém string de 8 dígitos
+    // normalizações adicionais
+    payload.CEP = payload.CEP ? onlyDigits(payload.CEP) : null; // string de 8 dígitos
     if (payload.LimiteCredito !== undefined && payload.LimiteCredito !== "")
       payload.LimiteCredito = Number(payload.LimiteCredito);
     else payload.LimiteCredito = null;

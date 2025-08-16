@@ -21,7 +21,7 @@
         <label>
           CEP
           <input
-            :class="{ invalid: cepFiltroMsg }"
+            :class="{ invalid: !!cepFiltroMsg }"
             :value="cepFiltroDisplay"
             @input="onCepFiltroInput"
             @keyup.enter="carregar"
@@ -54,7 +54,7 @@
         <label>
           CEP
           <input
-            :class="{ invalid: cepMsg }"
+            :class="{ invalid: !!cepMsg }"
             :value="cepDisplay"
             @input="onCepInput"
             @blur="onCepBlur"
@@ -112,9 +112,38 @@
           />
         </label>
 
-        <label>
+        <!-- Validade com 3 inputs (DD/MM/AAAA) -->
+        <label class="col-2">
           Validade
-          <input v-model="form.Validade" type="date" />
+          <div class="date-3">
+            <input
+              v-model="valDia"
+              inputmode="numeric"
+              pattern="\d*"
+              maxlength="2"
+              placeholder="DD"
+              @input="valDia = num2(valDia, 31)"
+            />
+            <span>/</span>
+            <input
+              v-model="valMes"
+              inputmode="numeric"
+              pattern="\d*"
+              maxlength="2"
+              placeholder="MM"
+              @input="valMes = num2(valMes, 12)"
+            />
+            <span>/</span>
+            <input
+              v-model="valAno"
+              inputmode="numeric"
+              pattern="\d*"
+              maxlength="4"
+              placeholder="AAAA"
+              @input="valAno = num4(valAno)"
+            />
+          </div>
+          <small v-if="valMsg" class="hint">{{ valMsg }}</small>
         </label>
       </div>
 
@@ -192,7 +221,7 @@ const cepFiltroMsg = ref("");
 /* formulário */
 const formVazio = {
   ID: null,
-  Codigo: "", // gerado no backend
+  Codigo: "",
   Nome: "",
   CPF_CNPJ: "",
   CEP: "",
@@ -205,33 +234,88 @@ const formVazio = {
   Complemento: "",
   Fone: "",
   LimiteCredito: 0,
-  Validade: "", // pode ser vazio; backend aceita
+  Validade: "",
 };
 const form = reactive({ ...formVazio });
+
+/* data Validade em 3 inputs */
+const valDia = ref("");
+const valMes = ref("");
+const valAno = ref("");
+const valMsg = ref("");
 
 /* CEP formulário */
 const cepDisplay = ref("");
 const cepMsg = ref("");
 
 /* utils */
-function maskCep(v) {
-  const d = (v ?? "").toString().replace(/\D/g, "").slice(0, 8);
-  if (d.length <= 5) return d;
-  return d.slice(0, 5) + "-" + d.slice(5);
-}
 function onlyDigits(v) {
   return (v ?? "").toString().replace(/\D/g, "");
 }
-function toYYYYMMDD(v) {
-  if (!v) return "";
-  const s = v.toString();
-  if (s.includes("/")) {
-    const [dd, mm, yyyy] = s.split("/");
-    if (dd && mm && yyyy)
-      return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
-  }
-  return s;
+function maskCep(v) {
+  const d = onlyDigits(v).slice(0, 8);
+  if (d.length <= 5) return d;
+  return d.slice(0, 5) + "-" + d.slice(5);
 }
+function pad2(n) {
+  return n.toString().padStart(2, "0");
+}
+function num2(v, limit) {
+  const d = onlyDigits(v).slice(0, 2);
+  if (!d) return "";
+  const n = Math.min(parseInt(d, 10) || 0, limit);
+  return n ? String(n) : "";
+}
+function num4(v) {
+  return onlyDigits(v).slice(0, 4);
+}
+
+/* normaliza para extrair YYYY-MM-DD de Date ou ISO completo */
+function normalizeToYMD(v) {
+  if (!v) return "";
+  const s = v instanceof Date ? v.toISOString() : String(v);
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : "";
+}
+
+/* monta e divide Validade */
+function joinValidadeDMY() {
+  const d = onlyDigits(valDia.value);
+  const m = onlyDigits(valMes.value);
+  const y = onlyDigits(valAno.value);
+  if (!d && !m && !y) return ""; // opcional
+  if (d.length === 0 || m.length === 0 || y.length < 4) return null;
+  const dd = pad2(d),
+    mm = pad2(m),
+    yyyy = y.padStart(4, "0");
+  const nd = parseInt(dd, 10),
+    nm = parseInt(mm, 10);
+  if (nm < 1 || nm > 12 || nd < 1 || nd > 31) return null;
+  return `${dd}/${mm}/${yyyy}`;
+}
+function splitValidadeToDMY(v) {
+  valDia.value = "";
+  valMes.value = "";
+  valAno.value = "";
+  if (!v) return;
+  const ymd = normalizeToYMD(v); // aceita Date, ISO, YYYY-MM-DD
+  if (ymd) {
+    const [yyyy, mm, dd] = ymd.split("-");
+    valDia.value = dd;
+    valMes.value = mm;
+    valAno.value = yyyy;
+    return;
+  }
+  const s = String(v);
+  const mBr = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  if (mBr) {
+    const [, dd, mm, yyyy] = mBr;
+    valDia.value = dd;
+    valMes.value = mm;
+    valAno.value = yyyy;
+  }
+}
+
 function toast(msg, tipo = "ok") {
   erro.value = tipo === "erro" ? msg : "";
   ok.value = tipo === "ok" ? msg : "";
@@ -254,17 +338,20 @@ function onCepFiltroInput(e) {
 function onCepInput(e) {
   const masked = maskCep(e.target.value);
   cepDisplay.value = masked;
-  form.CEP = onlyDigits(masked); // mantém string de 8 dígitos
-  cepMsg.value =
-    form.CEP && form.CEP.length !== 8 ? "CEP deve ter 8 dígitos" : "";
+  const digits = onlyDigits(masked);
+  form.CEP = digits; // mantém só dígitos no form
+  cepMsg.value = digits && digits.length !== 8 ? "CEP deve ter 8 dígitos" : "";
 }
 async function onCepBlur() {
-  if (!form.CEP) return;
-  if (form.CEP.length !== 8) {
+  const digits = onlyDigits(cepDisplay.value || form.CEP);
+  if (!digits) return;
+  if (digits.length !== 8) {
     cepMsg.value = "CEP deve ter 8 dígitos";
     return;
   }
-  const dados = await viaCep(form.CEP);
+  cepMsg.value = "";
+  form.CEP = digits;
+  const dados = await viaCep(digits);
   if (!dados) return;
   form.Logradouro = dados.Logradouro;
   form.Bairro = dados.Bairro;
@@ -303,7 +390,14 @@ function limparFiltros() {
 function validarFormulario() {
   const problemas = [];
   if (!form.Nome?.trim()) problemas.push("Nome");
-  if (!form.CEP || form.CEP.length !== 8) problemas.push("CEP (8 dígitos)");
+
+  const cepDigits = onlyDigits(cepDisplay.value || form.CEP);
+  if (cepDigits.length !== 8) problemas.push("CEP (8 dígitos)");
+  else {
+    form.CEP = cepDigits;
+    cepMsg.value = "";
+  }
+
   if (!form.Cidade?.trim()) problemas.push("Cidade");
   if (!form.UF || form.UF.toString().trim().length !== 2)
     problemas.push("UF (2 letras)");
@@ -320,16 +414,25 @@ function limparFormulario() {
   Object.assign(form, { ...formVazio });
   cepDisplay.value = "";
   cepMsg.value = "";
+  valDia.value = "";
+  valMes.value = "";
+  valAno.value = "";
+  valMsg.value = "";
 }
 function cancelar() {
   limparFormulario();
 }
 function editar(c) {
   Object.assign(form, { ...formVazio, ...c });
-  cepDisplay.value = maskCep(c.CEP);
-  if (form.Validade && String(form.Validade).length > 10) {
-    form.Validade = String(form.Validade).slice(0, 10);
-  }
+
+  // CEP: sincroniza dígitos + máscara e recalcula mensagem
+  form.CEP = onlyDigits(c.CEP);
+  cepDisplay.value = maskCep(form.CEP);
+  cepMsg.value =
+    form.CEP && form.CEP.length !== 8 ? "CEP deve ter 8 dígitos" : "";
+
+  // Validade: popula DD/MM/AAAA
+  splitValidadeToDMY(c.Validade);
 }
 async function remover(c) {
   if (!confirm(`Excluir cliente ${c.Nome}?`)) return;
@@ -346,17 +449,20 @@ async function remover(c) {
 async function salvar() {
   if (!validarFormulario()) return;
 
+  valMsg.value = "";
+  const validadeDMY = joinValidadeDMY();
+  if (validadeDMY === null) {
+    valMsg.value = "Informe dia, mês e ano válidos (DD/MM/AAAA).";
+    return;
+  }
+
   salvando.value = true;
   try {
     const payload = { ...form };
 
-    // CEP como string de 8 dígitos (sem converter para número)
     payload.CEP = onlyDigits(cepDisplay.value || payload.CEP);
-
-    // UF duas letras, maiúsculas
     payload.UF = (payload.UF ?? "").toString().trim().toUpperCase().slice(0, 2);
 
-    // LimiteCredito: número quando preenchido; vazio vira ""
     if (payload.LimiteCredito !== "" && payload.LimiteCredito != null) {
       payload.LimiteCredito = Number(
         payload.LimiteCredito.toString().replace(".", "").replace(",", ".")
@@ -365,8 +471,7 @@ async function salvar() {
       payload.LimiteCredito = "";
     }
 
-    // Validade: mantém string vazia ou YYYY-MM-DD
-    payload.Validade = toYYYYMMDD(payload.Validade);
+    payload.Validade = validadeDMY ?? "";
 
     if (form.ID) {
       await atualizarCliente(form.ID, payload);
@@ -538,6 +643,19 @@ button.danger {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 8px;
+}
+
+/* inputs da data (3 campos) */
+.date-3 {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr auto 1.4fr;
+  gap: 6px;
+  align-items: center;
+}
+.date-3 span {
+  color: var(--muted);
+  text-align: center;
+  font-weight: 600;
 }
 
 .table {
