@@ -1,10 +1,13 @@
+// backend/routes/clientes.js
 import { Router } from "express";
 import { pool } from "../db.js";
 import { body, validationResult } from "express-validator";
 
 const router = Router();
 
-// util: monta SET dinâmico para UPDATE
+/* utils */
+const onlyDigits = (s) => (s == null ? "" : String(s).replace(/\D/g, ""));
+
 function buildUpdateSet(bodyObj) {
   const campos = [
     "idUsuario",
@@ -34,7 +37,49 @@ function buildUpdateSet(bodyObj) {
   return { sets, params };
 }
 
-/* GET /clientes  (filtros: codigo, nome, cidade, cep; ordenado por ID desc) */
+async function gerarCodigo() {
+  const [r] = await pool.query(
+    "SELECT LPAD(IFNULL(MAX(ID)+1,1),4,'0') AS seq FROM clientes"
+  );
+  const seq = r[0]?.seq || "0001";
+  const hoje = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  return `C${hoje}-${seq}`;
+}
+
+/* validações comuns */
+const postValidations = [
+  body("Nome").trim().notEmpty().withMessage("Nome é obrigatório"),
+  body("UF")
+    .optional()
+    .isLength({ max: 2 })
+    .withMessage("UF deve ter no máximo 2 letras"),
+  body("CEP")
+    .optional({ checkFalsy: true })
+    .customSanitizer(onlyDigits)
+    .isLength({ min: 8, max: 8 })
+    .withMessage("CEP deve ter 8 dígitos"),
+  body("LimiteCredito")
+    .optional({ checkFalsy: true })
+    .isFloat()
+    .withMessage("Limite de crédito inválido"),
+  body("Validade")
+    .optional({ checkFalsy: true })
+    .isISO8601()
+    .withMessage("Data inválida"),
+  // não exigimos Codigo: será gerado se não vier
+];
+
+const putValidations = [
+  body("UF").optional().isLength({ max: 2 }),
+  body("CEP")
+    .optional({ checkFalsy: true })
+    .customSanitizer(onlyDigits)
+    .isLength({ min: 8, max: 8 }),
+  body("LimiteCredito").optional({ checkFalsy: true }).isFloat(),
+  body("Validade").optional({ checkFalsy: true }).isISO8601(),
+];
+
+/* GET /clientes (com filtros opcionais) */
 router.get("/", async (req, res, next) => {
   try {
     const { codigo, nome, cidade, cep } = req.query;
@@ -56,7 +101,7 @@ router.get("/", async (req, res, next) => {
     }
     if (cep) {
       sql += " AND CEP = ?";
-      params.push(Number(cep));
+      params.push(onlyDigits(cep)); // aceita com ou sem traço
     }
 
     sql += " ORDER BY ID DESC";
@@ -68,7 +113,7 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-/* GET /clientes/:id  (detalhe) */
+/* GET /clientes/:id */
 router.get("/:id", async (req, res, next) => {
   try {
     const [rows] = await pool.query("SELECT * FROM clientes WHERE ID = ?", [
@@ -82,98 +127,109 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-/* POST /clientes  (inclusão) */
-router.post(
-  "/",
-  [
-    body("Codigo").notEmpty().isLength({ max: 15 }),
-    body("Nome").notEmpty().isLength({ max: 150 }),
-    body("UF").optional().isLength({ max: 2 }),
-    body("CEP").optional().isInt(),
-    body("LimiteCredito").optional().isFloat(),
-  ],
-  async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty())
-      return res.status(400).json({ errors: errors.array() });
+/* POST /clientes */
+router.post("/", postValidations, async (req, res, next) => {
+  try {
+    const result = validationResult(req);
+    if (!result.isEmpty())
+      return res
+        .status(400)
+        .json({ message: "Dados inválidos", errors: result.array() });
 
-    try {
-      const campos = [
-        "idUsuario",
-        "Codigo",
-        "Nome",
-        "CPF_CNPJ",
-        "CEP",
-        "Logradouro",
-        "Endereco",
-        "Numero",
-        "Bairro",
-        "Cidade",
-        "UF",
-        "Complemento",
-        "Fone",
-        "LimiteCredito",
-        "Validade",
-      ];
-      const valores = campos.map((c) => req.body[c] ?? null);
+    const payload = { ...req.body };
 
-      const sql = `
-        INSERT INTO clientes
-        (idUsuario, Codigo, Nome, CPF_CNPJ, CEP, Logradouro, Endereco, Numero,
-         Bairro, Cidade, UF, Complemento, Fone, LimiteCredito, Validade)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      `;
-      const [result] = await pool.query(sql, valores);
+    // normalizações
+    payload.CEP = payload.CEP ? onlyDigits(payload.CEP) : null; // mantém string de 8 dígitos
+    if (payload.LimiteCredito !== undefined && payload.LimiteCredito !== "")
+      payload.LimiteCredito = Number(payload.LimiteCredito);
+    else payload.LimiteCredito = null;
 
-      const [novo] = await pool.query("SELECT * FROM clientes WHERE ID = ?", [
-        result.insertId,
-      ]);
-      res.status(201).json(novo[0]);
-    } catch (err) {
-      next(err);
-    }
+    if (payload.UF != null)
+      payload.UF = String(payload.UF).trim().toUpperCase().slice(0, 2);
+
+    // idUsuario padrão para teste, se não vier
+    if (payload.idUsuario == null) payload.idUsuario = 1;
+
+    // gerar Codigo se não vier
+    if (!payload.Codigo) payload.Codigo = await gerarCodigo();
+
+    const campos = [
+      "idUsuario",
+      "Codigo",
+      "Nome",
+      "CPF_CNPJ",
+      "CEP",
+      "Logradouro",
+      "Endereco",
+      "Numero",
+      "Bairro",
+      "Cidade",
+      "UF",
+      "Complemento",
+      "Fone",
+      "LimiteCredito",
+      "Validade",
+    ];
+    const valores = campos.map((c) => payload[c] ?? null);
+
+    const sql = `
+      INSERT INTO clientes
+      (idUsuario, Codigo, Nome, CPF_CNPJ, CEP, Logradouro, Endereco, Numero,
+       Bairro, Cidade, UF, Complemento, Fone, LimiteCredito, Validade)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `;
+    const [ins] = await pool.query(sql, valores);
+
+    const [novo] = await pool.query("SELECT * FROM clientes WHERE ID = ?", [
+      ins.insertId,
+    ]);
+    res.status(201).json(novo[0]);
+  } catch (err) {
+    next(err);
   }
-);
+});
 
-/* PUT /clientes/:id  (atualização parcial) */
-router.put(
-  "/:id",
-  [
-    body("Codigo").optional().isLength({ max: 15 }),
-    body("Nome").optional().isLength({ max: 150 }),
-    body("UF").optional().isLength({ max: 2 }),
-    body("CEP").optional().isInt(),
-    body("LimiteCredito").optional().isFloat(),
-  ],
-  async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty())
-      return res.status(400).json({ errors: errors.array() });
+/* PUT /clientes/:id */
+router.put("/:id", putValidations, async (req, res, next) => {
+  try {
+    const result = validationResult(req);
+    if (!result.isEmpty())
+      return res
+        .status(400)
+        .json({ message: "Dados inválidos", errors: result.array() });
 
-    try {
-      const { sets, params } = buildUpdateSet(req.body);
-      if (!sets.length)
-        return res.status(400).json({ message: "Nada para atualizar" });
+    const data = { ...req.body };
 
-      params.push(req.params.id);
-      await pool.query(
-        `UPDATE clientes SET ${sets.join(", ")} WHERE ID = ?`,
-        params
-      );
+    if (data.CEP !== undefined)
+      data.CEP = data.CEP ? onlyDigits(data.CEP) : null;
+    if (data.LimiteCredito !== undefined && data.LimiteCredito !== "")
+      data.LimiteCredito = Number(data.LimiteCredito);
 
-      const [atual] = await pool.query("SELECT * FROM clientes WHERE ID = ?", [
-        req.params.id,
-      ]);
-      if (!atual.length)
-        return res.status(404).json({ message: "Não encontrado" });
-      res.json(atual[0]);
-    } catch (err) {
-      next(err);
-    }
+    if (data.UF !== undefined && data.UF != null)
+      data.UF = String(data.UF).trim().toUpperCase().slice(0, 2);
+
+    const { sets, params } = buildUpdateSet(data);
+    if (!sets.length)
+      return res.status(400).json({ message: "Nada para atualizar" });
+
+    params.push(req.params.id);
+    await pool.query(
+      `UPDATE clientes SET ${sets.join(", ")} WHERE ID = ?`,
+      params
+    );
+
+    const [atual] = await pool.query("SELECT * FROM clientes WHERE ID = ?", [
+      req.params.id,
+    ]);
+    if (!atual.length)
+      return res.status(404).json({ message: "Não encontrado" });
+    res.json(atual[0]);
+  } catch (err) {
+    next(err);
   }
-);
+});
 
-/* DELETE /clientes/:id  (deleção) */
+/* DELETE /clientes/:id */
 router.delete("/:id", async (req, res, next) => {
   try {
     const [r] = await pool.query("DELETE FROM clientes WHERE ID = ?", [

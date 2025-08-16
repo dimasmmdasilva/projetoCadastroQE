@@ -205,7 +205,7 @@ const formVazio = {
   Complemento: "",
   Fone: "",
   LimiteCredito: 0,
-  Validade: "",
+  Validade: "", // pode ser vazio; backend aceita
 };
 const form = reactive({ ...formVazio });
 
@@ -254,7 +254,7 @@ function onCepFiltroInput(e) {
 function onCepInput(e) {
   const masked = maskCep(e.target.value);
   cepDisplay.value = masked;
-  form.CEP = onlyDigits(masked);
+  form.CEP = onlyDigits(masked); // mantém string de 8 dígitos
   cepMsg.value =
     form.CEP && form.CEP.length !== 8 ? "CEP deve ter 8 dígitos" : "";
 }
@@ -270,7 +270,6 @@ async function onCepBlur() {
   form.Bairro = dados.Bairro;
   form.Cidade = dados.Cidade;
   form.UF = dados.UF;
-  // não copiar logradouro para endereço — o usuário define o Endereço
 }
 
 /* carregar lista */
@@ -350,13 +349,23 @@ async function salvar() {
   salvando.value = true;
   try {
     const payload = { ...form };
+
+    // CEP como string de 8 dígitos (sem converter para número)
     payload.CEP = onlyDigits(cepDisplay.value || payload.CEP);
-    if (payload.CEP) payload.CEP = Number(payload.CEP);
+
+    // UF duas letras, maiúsculas
     payload.UF = (payload.UF ?? "").toString().trim().toUpperCase().slice(0, 2);
-    if (payload.LimiteCredito !== "")
+
+    // LimiteCredito: número quando preenchido; vazio vira ""
+    if (payload.LimiteCredito !== "" && payload.LimiteCredito != null) {
       payload.LimiteCredito = Number(
         payload.LimiteCredito.toString().replace(".", "").replace(",", ".")
       );
+    } else {
+      payload.LimiteCredito = "";
+    }
+
+    // Validade: mantém string vazia ou YYYY-MM-DD
     payload.Validade = toYYYYMMDD(payload.Validade);
 
     if (form.ID) {
@@ -371,7 +380,9 @@ async function salvar() {
   } catch (e) {
     const msg =
       e?.response?.data?.message ||
-      e?.response?.data?.errors?.map((x) => x.msg).join(" | ") ||
+      (Array.isArray(e?.response?.data?.errors)
+        ? e.response.data.errors.map((x) => x.msg).join(" | ")
+        : "") ||
       "Falha ao salvar";
     toast(msg, "erro");
     console.error(e);
@@ -423,7 +434,7 @@ body {
   color: var(--text);
   font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, Arial,
     sans-serif;
-  font-size: 16px; /* fonte maior */
+  font-size: 16px;
   line-height: 1.35;
 }
 .page {
